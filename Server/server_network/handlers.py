@@ -6,7 +6,7 @@ does that in one place.
 
 from .protocol import PROTOCOL_VERSION, ErrorCode, encode_message, ok
 from .session import CloseSession, State
-from .transfers import handle_download
+from .transfers import handle_download, handle_overwrite, handle_upload
 
 SERVER_NAME = "cnt3004-file-server"
 
@@ -87,10 +87,6 @@ def handle_goodbye(session, req):
     raise CloseSession()
 
 
-def handle_not_implemented(session, req):
-    session.send_error(ErrorCode.INTERNAL_ERROR, "command not implemented yet")
-
-
 HANDLERS = {
     "hello": handle_hello,
     "auth": handle_auth,
@@ -99,7 +95,6 @@ HANDLERS = {
     "subfolder": handle_subfolder,
     "goodbye": handle_goodbye,
     "download": handle_download,
-    # real versions come in a later part
-    "upload": handle_not_implemented,
-    "overwrite": handle_not_implemented,
+    "upload": handle_upload,
+    "overwrite": handle_overwrite,
 }
