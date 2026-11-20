@@ -23,3 +23,14 @@ def dribble(sock, data, delay=0.002):
     t = threading.Thread(target=run, daemon=True)
     t.start()
     return t
+
+
+def wait_until(predicate, timeout=3.0, interval=0.01):
+    """poll until predicate() is true. the server does its cleanup just after the
+    client has already seen the last byte"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return predicate()

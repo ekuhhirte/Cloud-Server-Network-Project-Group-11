@@ -6,6 +6,7 @@ does that in one place.
 
 from .protocol import PROTOCOL_VERSION, ErrorCode, encode_message, ok
 from .session import CloseSession, State
+from .transfers import handle_download
 
 SERVER_NAME = "cnt3004-file-server"
 
@@ -97,8 +98,8 @@ HANDLERS = {
     "delete": handle_delete,
     "subfolder": handle_subfolder,
     "goodbye": handle_goodbye,
-    # real versions come in later parts
-    "download": handle_not_implemented,
+    "download": handle_download,
+    # real versions come in a later part
     "upload": handle_not_implemented,
     "overwrite": handle_not_implemented,
 }
