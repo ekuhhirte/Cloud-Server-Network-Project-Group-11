@@ -17,7 +17,7 @@ class FileLock:
     # Writers can grab the sectional mutex lock to prevent new readers from entering, and then wait on the writer lock.
 
     # Waked threads via seamphore is a bit random but it should work well enough for this purpose
-    # It doesn't seem worth it for the limited amount of parallelism that happens to implement more memeory intentsive solutions to fix that
+    # It doesn't seem worth it for the limited amount of parallelism that happens to implement more memeory intensive solutions to fix that
 
     def __init__(self):
         self.readCount = 0 
@@ -57,3 +57,11 @@ class FileLock:
     def release_write(self):
         self.writerLock.release() # Release the writer lock before new threads enter to make sure all works as intended
         self.sectionLock.release() # Release the section lock to allow new threads to enter
+
+from contextlib import contextmanager # Unsure if this is the best way to handle the rest of this code
+
+class LockManager:
+    """ This manager acts as the central lookup for all the filelocks. Mutex lock + dictionary of overall locks based on file path """
+
+    def __init__(self, folder_path: str):
+        
