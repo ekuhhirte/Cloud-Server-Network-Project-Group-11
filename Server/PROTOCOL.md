@@ -63,6 +63,7 @@ For `upload`, after validation the server replies either:
 | `NOT_FOUND` | file/folder does not exist | no |
 | `FILE_EXISTS` | already exists | no |
 | `FILE_BUSY` | in use by another client | no |
+| `NOT_EMPTY` | folder still has contents | no |
 | `DISK_FULL` | no space | no |
 | `TOO_LARGE` | size above server limit | no |
 | `PROTOCOL_ERROR` | framing/JSON broken, stream untrusted | **yes** |
