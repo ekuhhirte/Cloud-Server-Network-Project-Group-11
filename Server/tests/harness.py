@@ -10,7 +10,9 @@ from tests.helpers import pair
 
 
 class Harness:
-    def __init__(self, backend=None, config=None, on_transfer=None):
+    def __init__(
+        self, backend=None, config=None, on_transfer=None, active_clients=None
+    ):
         self.backend = backend or FakeBackend()
         self.config = config or SessionConfig(idle_timeout=5, transfer_timeout=5)
         self.sock, server_sock = pair()
@@ -21,6 +23,7 @@ class Harness:
                 "config": self.config,
                 "addr": ("test", 0),
                 "on_transfer": on_transfer,
+                "active_clients": active_clients,
             },
             daemon=True,
         )

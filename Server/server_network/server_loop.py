@@ -37,7 +37,9 @@ def dispatch(session, raw):
         session.send_error(exc.code, str(exc))
 
 
-def serve_connection(sock, backend, config=None, addr=None, on_transfer=None):
+def serve_connection(
+    sock, backend, config=None, addr=None, on_transfer=None, active_clients=None
+):
     """Run a client until goodbye, disconnect or a fatal error. Never raises and
     always closes the socket."""
     config = config or SessionConfig()
@@ -47,6 +49,7 @@ def serve_connection(sock, backend, config=None, addr=None, on_transfer=None):
         config=config,
         addr=addr,
         on_transfer=on_transfer,
+        active_clients=active_clients,
     )
     session.log.info("session start")
     try:

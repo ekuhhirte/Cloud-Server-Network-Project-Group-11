@@ -8,6 +8,7 @@ import enum
 import logging
 from dataclasses import dataclass, field
 
+from .metrics import TransferRecord
 from .protocol import DEFAULT_CHUNK_SIZE, ErrorCode, error, send_message
 from .validation import DEFAULT_MAX_UPLOAD_SIZE
 
@@ -58,6 +59,7 @@ class Session:
     config: SessionConfig = field(default_factory=SessionConfig)
     addr: object = None
     on_transfer: object = None  # optional callback(TransferRecord)
+    active_clients: object = None  # optional callable() -> int, for metrics
 
     state: State = State.CONNECTED
     username: str = None
@@ -81,6 +83,40 @@ class Session:
         self.send(msg)
         if msg["fatal"]:
             self.state = State.CLOSED
+
+    # metrics
+    def count_active(self):
+        """How many clients are connected, if the server told us."""
+        if self.active_clients is None:
+            return None
+        try:
+            return self.active_clients()
+        except Exception:
+            return None
+
+    def report_transfer(self, operation, name, size, transferred, duration,
+                        outcome, concurrent=None):
+        """Pass a finished transfer to the analysis callback. Call it after the timed
+        part. If the callback fails we log it and move on so analysis bugs can't
+        break transfers.
+        """
+        if self.on_transfer is None:
+            return
+        record = TransferRecord(
+            operation=operation,
+            name=name,
+            size_bytes=size,
+            bytes_transferred=transferred,
+            duration_s=duration,
+            outcome=outcome,
+            username=self.username,
+            client_addr=str(self.addr) if self.addr is not None else None,
+            concurrent_clients=concurrent,
+        )
+        try:
+            self.on_transfer(record)
+        except Exception:
+            self.log.exception("on_transfer callback failed")
 
     # cleanup
     def cleanup(self):

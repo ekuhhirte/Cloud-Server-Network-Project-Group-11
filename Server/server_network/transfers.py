@@ -10,6 +10,7 @@ Rules for both:
 """
 
 import socket
+import time
 
 from .backend_api import BackendError, FileExistsOnServer
 from .protocol import ErrorCode, error, ok, prompt, send_raw
@@ -26,10 +27,13 @@ def handle_download(session, req):
     # error replies
     handle, size = backend.begin_download(name)
     session.download_handle = handle
+    concurrent = session.count_active()
+    start = duration = None
+    remaining = size
     try:
         session.sock.settimeout(cfg.transfer_timeout)
         session.send(ok(name=name, size=size))
-        remaining = size
+        start = time.perf_counter()  # timed region: file bytes only
         while remaining > 0:
             # never ask for more than is left, the size in the header has to match what
             # we send
@@ -41,6 +45,7 @@ def handle_download(session, req):
                 raise CloseSession()
             send_raw(session.sock, chunk)
             remaining -= len(chunk)
+        duration = time.perf_counter() - start  # end of timed region
         session.log.info("download complete %s (%d bytes)", name, size)
     except (OSError, CloseSession):
         # client left or timed out (or we're already closing). finally still releases
@@ -60,6 +65,18 @@ def handle_download(session, req):
                 session.sock.settimeout(cfg.idle_timeout)
             except OSError:
                 pass
+        # report after the timed part and after the lock is released
+        if start is not None:
+            ok_ = duration is not None
+            session.report_transfer(
+                "download",
+                name,
+                size,
+                size - remaining,
+                duration if ok_ else time.perf_counter() - start,
+                "ok" if ok_ else "aborted",
+                concurrent,
+            )
 
 
 # Upload
@@ -132,13 +149,16 @@ def _receive_upload(session, handle, name, size):
     cfg = session.config
     sock = session.sock
     session.upload_handle = handle  # write lock held now
+    concurrent = session.count_active()
+    start = duration = None
+    remaining = size
     try:
         sock.settimeout(cfg.transfer_timeout)
 
         # stream phase: failures here close the connection
         try:
             session.send(ok(ready=True, name=name, size=size))
-            remaining = size
+            start = time.perf_counter()  # timed region: file bytes only
             while remaining > 0:
                 # min() so we never read past the size, the bytes after the file are the
                 # next message
@@ -163,6 +183,7 @@ def _receive_upload(session, handle, name, size):
 
         # finish phase: every byte was consumed, stream is in sync
         stored = backend.finish_upload(handle)
+        duration = time.perf_counter() - start  # end of timed region
         session.upload_handle = None
         session.log.info("upload complete %s (%d bytes)", name, size)
         session.send(ok(name=stored, size=size))
@@ -174,3 +195,15 @@ def _receive_upload(session, handle, name, size):
             sock.settimeout(cfg.idle_timeout)
         except OSError:
             pass
+        # report after the timed part and after the lock is released
+        if start is not None:
+            ok_ = duration is not None
+            session.report_transfer(
+                "upload",
+                name,
+                size,
+                size - remaining,
+                duration if ok_ else time.perf_counter() - start,
+                "ok" if ok_ else "aborted",
+                concurrent,
+            )
