@@ -45,6 +45,14 @@ Every response has `"status"`: `"ok"`, `"error"` or `"prompt"`.
 | `error` | `code` (str), `message` (str), `fatal` (bool) | no |
 | `prompt` | `code` (`"FILE_EXISTS"`), `message` | no |
 
+`dir` replies `ok` with `path`, `entries` (list of `{name, type, size}`) and
+`truncated` (true if the listing was cut to fit one header frame).
+
+Session rules: before `auth` succeeds only `hello`, `auth`, `goodbye` are
+accepted (others get `NOT_AUTHENTICATED`). While a `FILE_EXISTS` prompt is
+outstanding only `overwrite` and `goodbye` are accepted. `hello` is
+optional but, if sent, must come before `auth`.
+
 For `upload`, after validation the server replies either:
 `ok` with `"ready": true` (client now sends `size` raw bytes),
 `prompt` / `FILE_EXISTS` (client must answer with an `overwrite` request), or
