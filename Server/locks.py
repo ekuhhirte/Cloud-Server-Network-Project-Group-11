@@ -63,14 +63,18 @@ class FileLock:
             return True
         # DO NOT RELEASE THE SECTION LOCK OR WRITER LOCK UNTILL WRITER IS FINISHED,
 
-    def release_read(self):
+    def release_read(self) -> bool:
         self.counterLock.acquire() # Acquire the counter lock
+        if (self.readCount == 0): # Prevent errors that occur during adding a reader to prevent releasing one
+            self.counterLock.release() # Release the counter lock
+            return False # Return false to indicate there was no read to release
         if (self.readCount == 1):
             self.writerLock.release() # Release the writer lock if this is the last reader
             self.readCount = 0
         else:
             self.readCount -= 1 # Decrement the read count
         self.counterLock.release() # Release the counter locks to allow other reading threads to enter or leave
+        return True # Return true if successful
 
     def release_write(self):
         self.writerLock.release() # Release the writer lock before new threads enter to make sure all works as intended
