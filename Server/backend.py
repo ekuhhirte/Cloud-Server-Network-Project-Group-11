@@ -2,6 +2,11 @@ import socket # for TCP
 import threading # for threads
 import json # for headers
 import os # for file operations
+import locks # for file locking
+
+lock_manager = locks.LockManager() # Initalize the lock manager object as a global that all threads can access
+
+
 
 def handle_client(client_socket, client_address):
     """This function is the basis of each thread, and it continues serving the client. 
@@ -40,7 +45,7 @@ def handle_client(client_socket, client_address):
                             # unsure if we want to build a handler function to check all conditionals
                         elif (message_type == "Upload Request"):
                             pass
-                            #recieve_file_from_client(client_socket, ...)
+                            recieve_file_from_client(client_socket, metadata["file_name"], metadata["file_path"], metadata["file_size"])
                         else:
                             # unrecognized type, send back error message
                             returnHeader = json.dumps({"type" : "error", "error" : "Unknown Command", "command" : metadata["type"]}) + "\n"
@@ -75,13 +80,39 @@ def send_file_to_client(client_socket, file_path):
 
     client_socket.sendall(returnHeader.encode("utf-8")) # sends the encoded header
 
-    # Stream file over TCP connection
-    with open(file_path, "rb") as f: # this will need to be replaced by the new version using the double semaphore lock
-        client_socket.sendfile(f)
+    file_lock = lock_manager.buildOrAcquireLock(file_path) # Get the file lock from the lock manager
+    try:
+       file_lock.acquire_read() # Acquire a reading lock
+        # Stream file over TCP connection
+       with open(file_path, "rb") as f: # this will need to be replaced by the new version using the double semaphore lock
+           client_socket.sendfile(f)
+    except Exception:
+        print("Error occured while streaming file to client")
+    finally:
+        file_lock.release_read() # Release the reading lock
 
 def recieve_file_from_client(client_socket, file_name, file_path, file_size):
     # not sure if name is needed seperately from file_path, later todo
-    pass
+    # need to normalize file_path later
+    if file_name is None or file_path is None or file_size is None:
+        returnHeader = json.dumps({"type" : "error", "error" : "Malformed Header"}) + "\n"
+        client_socket.sendall(returnHeader.encode("utf-8")) # sends back the error header
+        return
+    # Otherwise we have the data we need
+    # While data remains, write in 4096 chunks up to a file_size
+
+    remaining_bytes = file_size # not sure if its cleaner to just decrement the file size as we go
+    with open(file_path, "wb") as file:
+        while remaining_bytes > 0:
+            chunk = client_socket.recieve(min(4096, remaining_bytes))
+            if not chunk:
+                #returnHeader = json.dumps({"type" : "error", "error" : "Internal Server Error"}) + "\n"
+                #client_socket.sendall(returnHeader.encode("utf-8")) # sends back the error header
+                raise ConnectionError(f"Connection closed during file transfer")
+            file.write(chunk)
+            remaining_bytes -= len(chunk)
+
+
 
 def initalize_listener(host="127.0.0.1", port=8080):
     #create a TCP socket for the listener
