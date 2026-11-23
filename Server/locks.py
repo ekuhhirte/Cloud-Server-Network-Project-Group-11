@@ -21,15 +21,24 @@ class FileLock:
 
     def __init__(self):
         self.readCount = 0 
+        self.retired = False # Marks if this lock has been retired.
+        # A retired lock is one marked for deletion, but exists so that any remaining threads waiting on section lock 
+        # Retired is attached to the counter lock for safety
+        # or otherwise can safely exit
 
         # Create binary semaphores
         self.sectionLock = threading.Semaphore(1) #binary semaphore
-        self.counterLock = threading.Seamphore(1) #binary semaphore
-        self.writerLock = threading.Seamphore(1) #binary semaphore
+        self.counterLock = threading.Semaphore(1) #binary semaphore
+        self.writerLock = threading.Semaphore(1) #binary semaphore
 
-    def acquire_read(self):
+    def acquire_read(self) -> bool:
         self.sectionLock.acquire() # Acquire the section lock 
         self.counterLock.acquire() # Acquire the counter lock
+        if (self.retired == True): 
+            # This lock has been decomissoned, cannot acquire read. Release locks
+            self.counterLock.release() 
+            self.sectionLock.release() 
+            return False
         if (self.readCount == 0):
             self.writerLock.acquire() # Acquire the writer lock if this is the first reader
             self.readCount = 1
@@ -39,11 +48,20 @@ class FileLock:
         # Release the counter and section locks and proceed
         self.counterLock.release() # Release the counter lock to allow other reading threads to enter or leave
         self.sectionLock.release() # Release the section lock to allow new threads to enter
+        return True
 
-    def acquire_write(self):
+    def acquire_write(self) -> bool:
         self.sectionLock.acquire() # Acquire the section lock
         self.writerLock.acquire() # Acquire the writerLock
-        # DO NOT RELEASE THE SECTION LOCK OR WRITER LOCK UNTILL WRITER IS FINISHED
+        # If the lock has been retired, release internal locks and return false
+        # Else return true
+        if (self.retired == True):
+            self.sectionLock.release()
+            self.writerLock.release() 
+            return False
+        else:
+            return True
+        # DO NOT RELEASE THE SECTION LOCK OR WRITER LOCK UNTILL WRITER IS FINISHED,
 
     def release_read(self):
         self.counterLock.acquire() # Acquire the counter lock
@@ -64,4 +82,58 @@ class LockManager:
     """ This manager acts as the central lookup for all the filelocks. Mutex lock + dictionary of overall locks based on file path """
 
     def __init__(self, folder_path: str):
-        
+        self.locks: dict[str, FileLock] = {} # Initalize an empty dictionary of Filelocks that use the filepath as an input
+        self.lock = threading.Lock() # Mutex lock to protect datastructure, ownership is important in this case so we use a lock
+        # over a binary semaphore
+
+    def buildOrAcquireLock(self, filepath):
+        """ Return the lock associated with a particular file. Create one if it does not eixst. """
+        # Normalize path to the absolute path so relative paths do not generate new file locks
+        normalized_path = os.path.abspath(filepath)
+
+        with self.lock:
+            # use with lock for safety for errors, we don't use this earlier because we have to hold a lock inbetween and
+            # not just in one function call.
+            file_lock = self.locks.get(normalized_path) # grab the value associated with the absolute file path
+            if file_lock is not None:
+                # the file_lock exists
+                return file_lock
+            else:
+                file_lock = FileLock() # Generate a new instance of the filelock to represent this object
+                self.locks[normalized_path] = file_lock # Save it to the dictionary
+                return file_lock
+
+    def deleteLock(self, filepath):
+        """Delete the lock associated with a particular file. CALLING FUNCTION MUST HOLD THE SECTION LOCK
+        AND WRITER LOCK."""
+        # Normalize path to the absolute path so relative paths do not cause issues with deletion
+        normalized_path = os.path.abspath(filepath)
+
+        with self.lock:
+            # use with lock for safety
+            file_lock = self.locks.get(normalized_path)
+            file_lock.retired = True # Retire the lock
+            del self.locks[normalized_path] # Remove both value and key
+
+        # Old code commented out
+
+        # with self.lock:
+        #     # Use with lock for safety
+        #     file_lock = self.locks.get(normalized_path)
+
+        #     if file_lock.sectionLock.acquire(blocking=False): # Attempt to nonblocking acquire the sectionlock
+        #         if file_lock.writerLock.acquire(blocking=False): # Attempt to nonblocking acquire the writerLock
+        #             if file_lock.counterLock.acquire(blocking=False): # Attempt to nonblocking acquire the counterLock
+        #                 # We are good to delete the file
+        #                 del self.locks[normalized_path] # Remove the object and key from the dictionary
+        #             else:
+        #                 # Release the acquire locks and return false
+        #                 file_lock.sectionLock.release()
+        #                 file_lock.writerLock.release()
+        #                 return False
+        #         else:
+        #             # Release the acquired locks and return false
+        #             file_lock.sectionLock.release()
+        #             return False
+        #     else:
+        #         return False
