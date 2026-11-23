@@ -466,3 +466,391 @@ def test_two_clients_download_the_same_file_at_once():
     b.finish()
 
 
+# upload
+
+
+def upload(c, path, data):
+    """Do a whole upload from the client side and return the last reply."""
+    reply = c.ask({"type": "Upload Request", "file_path": path, "file_size": len(data)})
+    assert reply["type"] == "Upload Ready", reply
+    c.sock.sendall(data)
+    return c.read()
+
+
+@pytest.mark.parametrize("size", [0, 1, CHUNK - 1, CHUNK, CHUNK + 1, 3 * CHUNK, 10 * CHUNK + 5])
+def test_upload_saves_exactly_the_same_bytes(size):
+    s = FakeStorage()
+    c = logged_in(s)
+    data = os.urandom(size)
+    reply = upload(c, "f.bin", data)
+    assert reply == {"type": "Upload Complete", "file_path": "f.bin", "file_size": size}
+    assert sha(s.files["f.bin"]) == sha(data)
+    assert wait_until(lambda: s.open_files == 0)  # the write lock was released
+    c.finish()
+
+
+def test_upload_does_not_read_into_the_next_request():
+    # the file bytes and the next request arrive together. If the server read
+    # past the file size, the Dir Request would get eaten as file data.
+    s = FakeStorage()
+    c = logged_in(s)
+    data = os.urandom(2500)
+    c.send({"type": "Upload Request", "file_path": "f", "file_size": len(data)})
+    assert c.read()["type"] == "Upload Ready"
+    c.sock.sendall(data + b'{"type": "Dir Request"}\n')
+    assert c.read()["type"] == "Upload Complete"
+    assert c.read()["entries"][0]["name"] == "f"
+    c.finish()
+
+
+def test_header_and_file_bytes_in_one_packet():
+    # a client that does not wait for Upload Ready still works for a new file
+    s = FakeStorage()
+    c = logged_in(s)
+    data = os.urandom(3000)
+    header = {"type": "Upload Request", "file_path": "f", "file_size": len(data)}
+    c.sock.sendall((json.dumps(header) + "\n").encode() + data)
+    assert c.read()["type"] == "Upload Ready"
+    assert c.read()["type"] == "Upload Complete"
+    assert s.files["f"] == data
+    c.finish()
+
+
+def test_upload_then_download_round_trip():
+    s = FakeStorage()
+    c = logged_in(s)
+    data = os.urandom(5000)
+    upload(c, "r.bin", data)
+    reply, got = download(c, "r.bin")
+    assert got == data
+    c.finish()
+
+
+# the overwrite prompt
+
+
+def existing_file_storage():
+    s = FakeStorage()
+    s.files["a.txt"] = b"old"
+    return s
+
+
+def start_upload_of_existing_file(c, size=3):
+    return c.ask({"type": "Upload Request", "file_path": "a.txt", "file_size": size})
+
+
+def test_existing_file_asks_before_overwriting_and_yes_replaces_it():
+    s = existing_file_storage()
+    c = logged_in(s)
+    prompt = start_upload_of_existing_file(c)
+    assert prompt["type"] == "Overwrite Prompt" and prompt["file_path"] == "a.txt"
+    assert s.open_files == 0  # no lock is held while the client decides
+    assert c.ask({"type": "Overwrite Reply", "confirm": True})["type"] == "Upload Ready"
+    c.sock.sendall(b"new")
+    assert c.read()["type"] == "Upload Complete"
+    assert s.files["a.txt"] == b"new"
+    c.finish()
+
+
+def test_saying_no_keeps_the_old_file():
+    s = existing_file_storage()
+    c = logged_in(s)
+    start_upload_of_existing_file(c)
+    assert c.ask({"type": "Overwrite Reply", "confirm": False})["type"] == "Upload Cancelled"
+    assert s.files["a.txt"] == b"old"
+    assert c.ask({"type": "Dir Request"})["type"] == "Dir Response"  # back to normal
+    c.finish()
+
+
+def test_anything_but_true_counts_as_no():
+    s = existing_file_storage()
+    c = logged_in(s)
+    start_upload_of_existing_file(c)
+    assert c.ask({"type": "Overwrite Reply", "confirm": "yes"})["type"] == "Upload Cancelled"
+    assert s.files["a.txt"] == b"old"
+    c.finish()
+
+
+def test_answering_the_prompt_with_something_else_closes_the_connection():
+    # a client that ignores the prompt might already be sending file bytes
+    s = existing_file_storage()
+    c = logged_in(s)
+    start_upload_of_existing_file(c)
+    c.send({"type": "Dir Request"})
+    assert is_error(c.read(), "Expected Overwrite Reply")
+    assert c.closed_by_server()
+    assert s.files["a.txt"] == b"old"
+
+
+def test_file_that_becomes_busy_while_the_prompt_is_open():
+    s = existing_file_storage()
+    c = logged_in(s)
+    start_upload_of_existing_file(c)
+    s.busy.add("a.txt")  # somebody grabbed it while we waited
+    assert is_error(c.ask({"type": "Overwrite Reply", "confirm": True}), "File Is Busy")
+    assert c.ask({"type": "Dir Request"})["type"] == "Dir Response"
+    c.finish()
+
+
+def test_leaving_at_the_prompt_holds_nothing():
+    s = existing_file_storage()
+    c = logged_in(s)
+    start_upload_of_existing_file(c)
+    c.disconnect()
+    c.thread.join(5)
+    assert not c.thread.is_alive() and s.open_files == 0
+
+
+# refused before any file bytes move
+
+
+def test_uploads_that_are_refused_leave_the_connection_open():
+    s = FakeStorage()
+    s.busy.add("busy.txt")
+    s.disk_limit = 100
+    c = logged_in(s)
+
+    def up(path, size):
+        return c.ask({"type": "Upload Request", "file_path": path, "file_size": size})
+
+    assert is_error(up("busy.txt", 1), "File Is Busy")
+    assert is_error(up("../x", 1), "Bad Path")
+    assert is_error(up("x", -1), "Malformed Header")
+    assert is_error(up("x", "12"), "Malformed Header")
+    assert is_error(up("x", True), "Malformed Header")
+    assert is_error(up("x", 1.5), "Malformed Header")
+    assert is_error(up("x", network_layer.MAX_UPLOAD + 1), "File Too Large")
+    assert is_error(c.ask({"type": "Upload Request", "file_size": 1}), "Malformed Header")
+    assert is_error(c.ask({"type": "Upload Request", "file_path": "x"}), "Malformed Header")
+    assert c.ask({"type": "Dir Request"})["type"] == "Dir Response"
+    assert s.open_files == 0
+    c.finish()
+
+
+def test_upload_needs_login(conn):
+    reply = conn.ask({"type": "Upload Request", "file_path": "a", "file_size": 1})
+    assert is_error(reply, "Not Authenticated")
+
+
+# things going wrong in the middle of the file
+
+
+def test_client_leaving_in_the_middle_saves_nothing():
+    s = FakeStorage()
+    c = logged_in(s)
+    c.ask({"type": "Upload Request", "file_path": "half.bin", "file_size": 10_000})
+    c.sock.sendall(os.urandom(3000))
+    c.disconnect()
+    c.thread.join(5)
+    assert not c.thread.is_alive()
+    assert s.open_files == 0 and "half.bin" not in s.files
+
+
+def test_client_that_stops_sending_times_out(monkeypatch):
+    monkeypatch.setattr(network_layer, "TIMEOUT_TRANSFER", 0.3)
+    s = FakeStorage()
+    c = logged_in(s)
+    c.ask({"type": "Upload Request", "file_path": "slow", "file_size": 5000})
+    c.sock.sendall(b"abc")  # ...then silence
+    start = time.time()
+    c.thread.join(5)
+    assert not c.thread.is_alive() and time.time() - start < 3
+    assert s.open_files == 0 and "slow" not in s.files
+    c.disconnect()
+
+
+def test_disk_filling_up_in_the_middle_tells_the_client_and_closes():
+    s = FakeStorage()
+    s.disk_limit = 2000
+    c = logged_in(s)
+    assert c.ask({"type": "Upload Request", "file_path": "f", "file_size": 1500})["type"] == "Upload Ready"
+    s.files["other"] = b"x" * 1500  # the disk fills up while we upload
+    c.sock.sendall(os.urandom(1500))
+    assert is_error(c.read(), "Disk Full")
+    assert c.closed_by_server()
+    c.thread.join(5)
+    assert s.open_files == 0 and "f" not in s.files
+
+
+def test_backend_bug_while_writing_closes_the_connection():
+    class Broken:
+        def write(self, chunk):
+            raise RuntimeError("boom")
+
+    @contextmanager
+    def broken(path):
+        yield Broken()
+
+    s = FakeStorage()
+    s.upload = broken
+    c = logged_in(s)
+    c.ask({"type": "Upload Request", "file_path": "f", "file_size": 3000})
+    c.sock.sendall(os.urandom(1500))
+    assert is_error(c.read(), "Internal Server Error")
+    assert c.closed_by_server()
+
+
+def test_failed_upload_does_not_block_a_retry():
+    s = FakeStorage()
+    c1 = logged_in(s)
+    c1.ask({"type": "Upload Request", "file_path": "f.bin", "file_size": 4000})
+    c1.sock.sendall(os.urandom(100))
+    c1.disconnect()
+    c1.thread.join(5)
+    c2 = logged_in(s)
+    data = os.urandom(4000)
+    assert upload(c2, "f.bin", data)["type"] == "Upload Complete"
+    assert s.files["f.bin"] == data
+    c2.finish()
+
+
+def test_failing_to_save_at_the_end_is_an_error_but_the_connection_lives():
+    s = FakeStorage()
+    s.commit_error = OSError(28, "disk full while saving")
+    c = logged_in(s)
+    c.ask({"type": "Upload Request", "file_path": "f", "file_size": 3})
+    c.sock.sendall(b"abc")
+    assert is_error(c.read(), "Disk Full")
+    assert c.ask({"type": "Dir Request"})["type"] == "Dir Response"  # still in sync
+    assert s.open_files == 0 and "f" not in s.files
+    c.finish()
+
+
+def test_two_clients_upload_at_the_same_time():
+    s = FakeStorage()
+    a, b = logged_in(s), logged_in(s)
+    da, db = os.urandom(50_000), os.urandom(70_000)
+    ra = a.ask({"type": "Upload Request", "file_path": "a.bin", "file_size": len(da)})
+    rb = b.ask({"type": "Upload Request", "file_path": "b.bin", "file_size": len(db)})
+    assert ra["type"] == rb["type"] == "Upload Ready"
+    a.sock.sendall(da)
+    b.sock.sendall(db)
+    assert a.read()["type"] == "Upload Complete" and b.read()["type"] == "Upload Complete"
+    assert s.files["a.bin"] == da and s.files["b.bin"] == db
+    a.finish()
+    b.finish()
+
+
+# numbers for the analysis module
+
+
+class Collector:
+    """A list of records that works as the record_transfer function."""
+
+    def __init__(self):
+        self.records = []
+        self.lock = threading.Lock()
+
+    def __call__(self, record):
+        with self.lock:
+            self.records.append(record)
+
+
+def test_download_is_recorded():
+    s = FakeStorage()
+    s.files["f.bin"] = os.urandom(5000)
+    got = Collector()
+    c = logged_in(s, got)
+    download(c, "f.bin")
+    assert wait_until(lambda: len(got.records) == 1)
+    r = got.records[0]
+    assert (r["operation"], r["file"], r["size_bytes"], r["user"]) == ("download", "f.bin", 5000, "ty")
+    assert r["seconds"] >= 0 and r["response_time_s"] >= 0 and r["clients"] >= 1
+    c.finish()
+
+
+def test_upload_is_recorded():
+    got = Collector()
+    c = logged_in(FakeStorage(), got)
+    upload(c, "u.bin", os.urandom(4321))
+    assert wait_until(lambda: len(got.records) == 1)
+    r = got.records[0]
+    assert (r["operation"], r["file"], r["size_bytes"]) == ("upload", "u.bin", 4321)
+    c.finish()
+
+
+def test_rate_is_megabytes_per_second():
+    s = FakeStorage()
+    s.files["f"] = b"x" * 10
+    got = Collector()
+    c = logged_in(s, got)
+    download(c, "f")
+    assert wait_until(lambda: len(got.records) == 1)
+    r = got.records[0]
+    if r["seconds"] > 0:
+        assert r["mb_per_s"] == pytest.approx(10 / r["seconds"] / 1_000_000)
+    c.finish()
+
+
+def test_records_have_everything_the_analysis_needs():
+    s = FakeStorage()
+    s.files["f"] = b"abc"
+    got = Collector()
+    c = logged_in(s, got)
+    download(c, "f")
+    assert wait_until(lambda: len(got.records) == 1)
+    expected = {
+        "operation", "file", "size_bytes", "seconds", "mb_per_s",
+        "response_time_s", "clients", "user", "client", "time",
+    }
+    assert set(got.records[0]) == expected
+    c.finish()
+
+
+def test_transfers_that_fail_or_are_refused_are_not_recorded():
+    s = FakeStorage()
+    s.files["big"] = os.urandom(3 * 1024 * 1024)
+    got = Collector()
+    c = logged_in(s, got)
+    c.ask({"type": "Download Request", "file_path": "missing"})
+    c.ask({"type": "Upload Request", "file_path": "../x", "file_size": 1})
+    c.ask({"type": "Dir Request"})
+    c.ask({"type": "Download Request", "file_path": "big"})
+    c.reader.read(100)
+    c.disconnect()  # leaves in the middle of the download
+    c.thread.join(5)
+    time.sleep(0.1)
+    assert got.records == []
+
+
+def test_a_crashing_recorder_does_not_break_the_transfer():
+    def boom(record):
+        raise RuntimeError("analysis is broken")
+
+    s = FakeStorage()
+    s.files["f"] = b"hello"
+    c = logged_in(s, boom)
+    reply, data = download(c, "f")
+    assert data == b"hello"
+    assert c.ask({"type": "Dir Request"})["type"] == "Dir Response"
+    c.finish()
+
+
+def test_a_slow_recorder_does_not_inflate_the_measured_time():
+    got = []
+
+    def slow(record):
+        got.append(record)
+        time.sleep(0.4)  # like a slow database insert
+
+    s = FakeStorage()
+    s.files["f"] = os.urandom(3000)
+    c = logged_in(s, slow)
+    download(c, "f")
+    assert wait_until(lambda: len(got) == 1)
+    assert got[0]["seconds"] < 0.3  # the timer had stopped before the recorder ran
+    c.finish()
+
+
+def test_clients_counts_running_threads():
+    s = FakeStorage()
+    s.files["f"] = b"abc"
+    got = Collector()
+    a, b = logged_in(s, got), logged_in(s, got)
+    download(a, "f")
+    assert wait_until(lambda: len(got.records) == 1)
+    assert got.records[0]["clients"] >= 2
+    a.finish()
+    b.finish()
+
+

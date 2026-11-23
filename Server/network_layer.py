@@ -13,6 +13,11 @@ The backend needs these methods (no base class to inherit):
     delete_dir(path)                    remove a folder
     download(path)                      "with" block giving (file, size),
                                         holds a read lock while open
+    exists(path)                        True or False
+    upload(path)                        "with" block giving something with
+                                        .write(), holds a write lock. If the
+                                        block ends in an error, throw away
+                                        the half written file.
 
 Problems are normal Python errors: FileNotFoundError, FileExistsError,
 OSError (disk full etc.), or FileBusyError from this file if someone else
@@ -23,6 +28,8 @@ import errno
 import json
 import logging
 import socket
+import threading
+import time
 
 log = logging.getLogger("network_layer")
 
@@ -32,6 +39,7 @@ TIMEOUT_IDLE = 300  # seconds of silence before we drop the client
 MAX_DIR_ENTRIES = 500
 CHUNK = 64 * 1024  # bytes per read/send while moving a file
 TIMEOUT_TRANSFER = 30  # seconds with no data in the middle of a file
+MAX_UPLOAD = 4 * 1024**3
 
 
 class FileBusyError(Exception):
@@ -194,6 +202,7 @@ def do_subfolder(c, header):
 
 
 def do_download(c, header):
+    got_request = time.perf_counter()
     path = check_path(header.get("file_path"))
     with c.backend.download(path) as (f, size):
         send_header(
@@ -205,8 +214,10 @@ def do_download(c, header):
                 "file_size": size,
             },
         )
+        response_time = time.perf_counter() - got_request
         c.sock.settimeout(TIMEOUT_TRANSFER)
         try:
+            start = time.perf_counter()  # only times the file bytes
             sent = 0
             while sent < size:
                 # only read what is left so we send exactly file_size bytes
@@ -215,10 +226,117 @@ def do_download(c, header):
                     raise OSError("file got shorter while it was being sent")
                 c.sock.sendall(chunk)
                 sent += len(chunk)
+            seconds = time.perf_counter() - start
         except Exception as exc:
             # client expects file bytes here, an error message would look like
             # file data, so just close the connection
             raise BadStream("download stopped part way") from exc
+    # lock is released and the timer is stopped by now
+    report_transfer(c, "download", path, size, seconds, response_time)
+
+
+def ask_overwrite(c, path):
+    # file exists already, ask if they want to replace it
+    send_header(
+        c.sock,
+        {
+            "type": "Overwrite Prompt",
+            "file_path": path,
+            "message": f"'{path}' already exists. Overwrite?",
+        },
+    )
+    reply = read_header(c.sock_file)
+    if reply is None or reply.get("type") != "Overwrite Reply":
+        # they might already be sending file bytes, no way to resync
+        raise BadStream("expected an Overwrite Reply", reply="Expected Overwrite Reply")
+    return reply.get("confirm") is True
+
+
+def do_upload(c, header):
+    path = check_path(header.get("file_path"))
+    size = get(header, "file_size", int)
+    if size < 0:
+        raise BadRequest("Malformed Header")
+    if size > MAX_UPLOAD:
+        raise BadRequest("File Too Large")
+    if c.backend.exists(path) and not ask_overwrite(c, path):
+        send_header(c.sock, {"type": "Upload Cancelled", "file_path": path})
+        return
+    with c.backend.upload(path) as f:
+        send_header(c.sock, {"type": "Upload Ready", "file_path": path, "file_size": size})
+        c.sock.settimeout(TIMEOUT_TRANSFER)
+        try:
+            remaining = size
+            while remaining > 0:
+                # stop at file_size, whatever comes after is the next request
+                chunk = c.sock_file.read(min(CHUNK, remaining))
+                if not chunk:
+                    raise ConnectionError("client left in the middle of the upload")
+                f.write(chunk)
+                remaining -= len(chunk)
+        except Exception as exc:
+            # leaving the with block discards the partial file
+            raise BadStream("upload stopped part way", reply=error_text(exc)) from exc
+    # we read every byte, so if saving fails the stream is still fine and
+    # the client can just get an error message
+    send_header(c.sock, {"type": "Upload Complete", "file_path": path, "file_size": size})
+
+
+def do_upload(c, header):
+    path = check_path(header.get("file_path"))
+    size = get(header, "file_size", int)
+    if size < 0:
+        raise BadRequest("Malformed Header")
+    if size > MAX_UPLOAD:
+        raise BadRequest("File Too Large")
+    if c.backend.exists(path) and not ask_overwrite(c, path):
+        send_header(c.sock, {"type": "Upload Cancelled", "file_path": path})
+        return
+    asked = time.perf_counter()  # after the overwrite answer, so their think time is not counted
+    with c.backend.upload(path) as f:
+        send_header(c.sock, {"type": "Upload Ready", "file_path": path, "file_size": size})
+        response_time = time.perf_counter() - asked
+        c.sock.settimeout(TIMEOUT_TRANSFER)
+        try:
+            start = time.perf_counter()  # only times the file bytes
+            remaining = size
+            while remaining > 0:
+                # stop at file_size, whatever comes after is the next request
+                chunk = c.sock_file.read(min(CHUNK, remaining))
+                if not chunk:
+                    raise ConnectionError("client left in the middle of the upload")
+                f.write(chunk)
+                remaining -= len(chunk)
+            seconds = time.perf_counter() - start
+        except Exception as exc:
+            # leaving the with block discards the partial file
+            raise BadStream("upload stopped part way", reply=error_text(exc)) from exc
+    # we read every byte, so if saving fails the stream is still fine and
+    # the client can just get an error message
+    send_header(c.sock, {"type": "Upload Complete", "file_path": path, "file_size": size})
+    report_transfer(c, "upload", path, size, seconds, response_time)
+
+
+def report_transfer(c, operation, path, size, seconds, response_time):
+    # hands the numbers to the analysis code. Failed transfers are skipped.
+    if c.record_transfer is None:
+        return
+    record = {
+        "operation": operation,
+        "file": path,
+        "size_bytes": size,
+        "seconds": seconds,
+        "mb_per_s": size / seconds / 1_000_000 if seconds > 0 else 0.0,
+        "response_time_s": response_time,  # time until we were ready, before file bytes
+        "clients": threading.active_count() - 1,  # rough count of busy clients
+        "user": c.username,
+        "client": str(c.address),
+        "time": time.time(),
+    }
+    try:
+        c.record_transfer(record)
+    except Exception:
+        log.exception("record_transfer failed")  # a bug in analysis shouldn't break the transfer
 
 
 def handle_request(c, header):
@@ -242,6 +360,9 @@ def handle_request(c, header):
         return True
     if kind == "Download Request":
         do_download(c, header)
+        return True
+    if kind == "Upload Request":
+        do_upload(c, header)
         return True
     raise BadRequest("Unknown Command")
 
