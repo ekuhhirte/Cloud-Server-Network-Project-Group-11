@@ -58,6 +58,7 @@ def recieve_file_from_server(server_socket, server_filepath) -> bool:
         print("Error Occurred with server response")
         # Might need to clear socket buffer afterwards?
         clear_buffer(server_socket)
+        return False
     elif (response.get("type") == "Download Response"):
         # We got the right packet, safely grab the information out of the header
         filename = response.get("filename")
@@ -67,6 +68,22 @@ def recieve_file_from_server(server_socket, server_filepath) -> bool:
             # Maybe need to clear socket buffer?
             clear_buffer(server_socket)
             return False
+
+        # Write data to a file
+        # Todo: Add support for command line interface specifiying a file path for it to download to,
+        # Not a priority for the test though.
+
+        bytes_recieved = 0
+        chunk_Size = 4096
+        with open(filename, "wb") as file:
+            while bytes_recieved < file_size:
+                chunk = server_socket.recv(min(chunk_Size, (file_size - bytes_recieved)))
+                if not chunk:
+                    print(f"Error: Connection closed early: Expected {file_size} bytes. Recieved {bytes_recieved} bytes. Difference: {file_size - bytes_recieved}")
+                    return False
+                file.write(chunk)
+                bytes_recieved += len(chunk) 
+        return True
 
 
 
