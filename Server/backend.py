@@ -44,7 +44,6 @@ def handle_client(client_socket, client_address):
                             send_file_to_client(client_socket, metadata["file_path"])
                             # unsure if we want to build a handler function to check all conditionals
                         elif (message_type == "Upload Request"):
-                            pass
                             recieve_file_from_client(client_socket, metadata["file_name"], metadata["file_path"], metadata["file_size"])
                         else:
                             # unrecognized type, send back error message
@@ -56,9 +55,11 @@ def handle_client(client_socket, client_address):
                         client_socket.sendall(returnHeader.encode("utf-8"))
             except ConnectionError as e:
                 print(f"Error with connection: {e}")
+                return
                 # Terminate connection or thread here
             except Exception as e:
                 print(f"Error Occured: {e}")
+                return
                 # Terminate connection or thread here
 
 def send_file_to_client(client_socket, file_path):
@@ -104,13 +105,17 @@ def recieve_file_from_client(client_socket, file_name, file_path, file_size):
     remaining_bytes = file_size # not sure if its cleaner to just decrement the file size as we go
     with open(file_path, "wb") as file:
         while remaining_bytes > 0:
-            chunk = client_socket.recieve(min(4096, remaining_bytes))
+            chunk = client_socket.recv(min(4096, remaining_bytes))
             if not chunk:
                 #returnHeader = json.dumps({"type" : "error", "error" : "Internal Server Error"}) + "\n"
                 #client_socket.sendall(returnHeader.encode("utf-8")) # sends back the error header
                 raise ConnectionError(f"Connection closed during file transfer")
             file.write(chunk)
             remaining_bytes -= len(chunk)
+
+    returnHeader = json.dumps({"type" : "Upload Response"}) + "\n"
+    client_socket.sendall(returnHeader.encode("utf-8")) # Sends back the success via the Upload Response header
+    return
 
 
 

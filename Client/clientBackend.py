@@ -4,7 +4,7 @@ import os
 import socket
 import json
 
-def send_file_to_server(server_socket, origin_filepath, destination_filepath) -> bool:
+def send_file_to_server(server_socket, server_socket_makefile, origin_filepath, destination_filepath) -> bool:
     # Bool conditional on success vs failure
     origin_filepath = os.path.abspath(origin_filepath) # Normalize the file_path to the absolute one
 
@@ -22,28 +22,29 @@ def send_file_to_server(server_socket, origin_filepath, destination_filepath) ->
     server_socket.sendall(sendingHeader.encode("utf-8"))
 
     # Send file to server
-    with open(origin_filepath) as file:
+    with open(origin_filepath, 'rb') as file: #MUST BE OPENED IN BINARY
         server_socket.sendfile(file)
 
     # Await response from the server
-    response = await_response_from_server(server_socket)
+    response = await_response_from_server(server_socket_makefile)
+    print(f"Response Packet from Server: {response}") # Debug Code
 
     # Read response from server if it exists
     if response is None:
         print("Error Occured with server response")
         return False
     else:
-        if (response.get("type") == "Success"):
+        if (response.get("type") == "Upload Response"):
             print("File succesfully sent to server")
             return True
         elif (response.get("type") == "error"):
             print("File failed to be sent to server")
             if (response.get("error") is not None):
                 # If response reason is here, print it, otherwise don't print anything
-                print(f"Failure Reason: {response.get("error")}")
+                print(f"Failure Reason: {response.get('error')}")
             return False
 
-def recieve_file_from_server(server_socket, server_filepath) -> bool:
+def recieve_file_from_server(server_socket, server_socket_makefile,  server_filepath) -> bool:
     """ Requests and Recieves a file from the server """
 
     # Generate and send request header
@@ -51,22 +52,23 @@ def recieve_file_from_server(server_socket, server_filepath) -> bool:
     server_socket.sendall(sendingHeader.encode("utf-8"))
 
     # Wait for return header from server
-    response = await_response_from_server(server_socket)
-
+    response = await_response_from_server(server_socket_makefile)
+    print(f"Response Packet from Server: {response}") # Debug Code
+    
     # Read response from the server if it exists
     if response is None:
         print("Error Occurred with server response")
         # Might need to clear socket buffer afterwards?
-        clear_buffer(server_socket)
+        clear_buffer(server_socket, server_socket_makefile)
         return False
     elif (response.get("type") == "Download Response"):
         # We got the right packet, safely grab the information out of the header
         filename = response.get("filename")
-        file_size = response.get("file_Size")
+        file_size = response.get("file_size")
         if (filename is None or file_size is None):
             print(f"Error: Malformed Packet from Server")
             # Maybe need to clear socket buffer?
-            clear_buffer(server_socket)
+            clear_buffer(server_socket, server_socket_makefile)
             return False
 
         # Write data to a file
@@ -87,9 +89,9 @@ def recieve_file_from_server(server_socket, server_filepath) -> bool:
 
 
 
-def await_response_from_server(server_socket):
+def await_response_from_server(server_socket_makefile):
             """ Awaits one header from the server, returns None if an error occured """
-            header = server_socket.readline(4096) # Max limit on readline, should likely not be exceeded
+            header = server_socket_makefile.readline(4096) # Max limit on readline, should likely not be exceeded
             if not header:
                 raise ConnectionError # We should always be able to read the header, otherwise connection failure
 
@@ -104,17 +106,15 @@ def await_response_from_server(server_socket):
                 # Other error, don't attempt to deal with it further
                 print(f"Error parsing json: {e}")
                 return None
-            
-            message_type = metadata["type"]
             return metadata
     
-def clear_buffer(server_socket):
+def clear_buffer(server_socket, server_socket_makefile):
     original_timeout_setting = server_socket.gettimeout()
     server_socket.setblocking(False)
 
     try:
         while True:
-            data = server_socket.recv(4096)
+            data = server_socket_makefile.read(4096)
             if not data:
                 # Connection closed
                 break

@@ -85,7 +85,7 @@ from contextlib import contextmanager # Unsure if this is the best way to handle
 class LockManager:
     """ This manager acts as the central lookup for all the filelocks. Mutex lock + dictionary of overall locks based on file path """
 
-    def __init__(self, folder_path: str):
+    def __init__(self): #folder_path: str
         self.locks: dict[str, FileLock] = {} # Initalize an empty dictionary of Filelocks that use the filepath as an input
         self.lock = threading.Lock() # Mutex lock to protect datastructure, ownership is important in this case so we use a lock
         # over a binary semaphore
