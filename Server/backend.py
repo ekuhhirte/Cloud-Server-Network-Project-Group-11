@@ -1,3 +1,4 @@
+from itertools import filterfalse
 import socket # for TCP
 import threading # for threads
 import json # for headers
@@ -153,7 +154,28 @@ def delete_file(client_socket, file_path) -> bool:
     # File was deleted and lock was retired
     return True
 
+def create_subfolder(client_socket, dir_path) -> bool:
+    if (os.path.isdir(dir_path)):
+        # Directory already exists
+        returnHeader = json.dumps({"type": "error", "error": "Directory already exists"})
+        client_socket.sendall(returnHeader.encode("utf-8"))
+        return False
 
+    # Directory does not exist
+    # Attempt creating only one directory at a time
+    try:
+        os.makedir(dir_path)
+    except FileNotFoundError:
+        returnHeader = json.dumps({"type": "error", "error": "Parent Directory does not exist"})
+        client_socket.sendall(returnHeader.encode("utf-8"))
+        return False
+    except Exception as e:
+        returnHeader = json.dumps({"type": "error", "error": "Internal Server Error"})
+        client_socket.sendall(returnHeader.encode("utf-8"))
+        print(f"Error while attempting to create subfolder: {e}")
+        return False
+
+    return True # All succeeded
 
 
 def initalize_listener(host="127.0.0.1", port=8080):
