@@ -177,6 +177,26 @@ def create_subfolder(client_socket, dir_path) -> bool:
 
     return True # All succeeded
 
+def delete_subfolder(client_socket, dir_path) -> bool:
+    if (os.path.isdir(dir_path) == False):
+        # Directory does not exist
+        returnHeader = json.dumps({"type": "error", "error": "Directory does not exist"})
+        client_socket.sendall(returnHeader.encode("utf-8"))
+        return False
+
+    try:
+        os.rmdir(dir_path)
+    except OSError:
+        returnHeader = json.dumps({"type": "error", "error": "Directory is not empty"})
+        client_socket.sendall(returnHeader.encode("utf-8"))
+        return False
+    except Exception as e:
+        returnHeader = json.dumps({"type": "error", "error": "Internal Server Error"})
+        client_socket.sendall(returnHeader.encode("utf-8"))
+        print(f"Error while attempting to delete subfolder: {e}")
+        return False
+
+    return True # All succeeded
 
 def initalize_listener(host="127.0.0.1", port=8080):
     #create a TCP socket for the listener
