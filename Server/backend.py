@@ -105,7 +105,7 @@ def recieve_file_from_client(client_socket, file_name, file_path, file_size):
     remaining_bytes = file_size # not sure if its cleaner to just decrement the file size as we go
     with open(file_path, "wb") as file:
         while remaining_bytes > 0:
-            chunk = client_socket.recv(min(4096, remaining_bytes))
+            chunk = client_socket.recv(min(4096, remaining_bytes)) # Should this be using the makefile instead? Might be safer to use the buffer
             if not chunk:
                 #returnHeader = json.dumps({"type" : "error", "error" : "Internal Server Error"}) + "\n"
                 #client_socket.sendall(returnHeader.encode("utf-8")) # sends back the error header
@@ -116,6 +116,43 @@ def recieve_file_from_client(client_socket, file_name, file_path, file_size):
     returnHeader = json.dumps({"type" : "Upload Response"}) + "\n"
     client_socket.sendall(returnHeader.encode("utf-8")) # Sends back the success via the Upload Response header
     return
+
+def delete_file(client_socket, file_path) -> bool:
+    """ This function attempts to delete a file, but will return an error if the file is being used or doesn't exist."""
+    if (os.path.isfile(file_path) == False):
+        # The file does not exist
+        returnHeader = json.dumps({"type": "error", "error": "File does not exist"})
+        client_socket.sendall(returnHeader.encode("utf-8")) # Send back the error header
+        return False
+    file_lock = lock_manager.buildOrAcquireLock(file_path) # Get the filelock assocaited with the filepath 
+
+    if file_lock.sectionLock.acquire(blocking=False):
+       # Section lock was acquired (no reason to proceed further to get writing lock if section lock was occupied)
+       if file_lock.writerLock.acquire(blocking=False):
+           # Writing lock was acquired, no other threads are currently using the file
+
+           # Set retired to true so that new threads don't enter the retired lock (as file is being removed)
+           file_lock.counterLock.acquire() # Acquire the counting lock (blocking as no other threads should be in the file)
+           file_lock.retired = True 
+
+           try:
+               os.remove(file_path) # Remove the file
+           except Exception as e:
+               print(f"Error removing file: {e}")
+               returnHeader = json.dumps({"type": "error", "error": "Internal Server Error"})
+               client_socket.sendall(returnHeader.encode("utf-8")) # Send back the error header
+               return False
+       else:
+           returnHeader = json.dumps({"type": "error", "error": "Unable to acquire writer lock, file is occupied"})
+           client_socket.sendall(returnHeader.encode("utf-8")) # Send back the error header
+           return False
+    else:
+        returnHeader = json.dumps({"type": "error", "error": "Unable to acquire section lock, file is occupied"})
+        client_socket.sendall(returnHeader.encode("utf-8")) # Send back the error header
+        return False
+    # File was deleted and lock was retired
+    return True
+
 
 
 
