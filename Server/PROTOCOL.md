@@ -28,9 +28,10 @@ A few things to watch when writing code for this:
 | type | fields |
 |---|---|
 | `Auth Request` | `username`, `credential` |
-| `Dir Request` | `dir_path` (leave it out for the top folder) |
+| `Directory Request` | `file_path` (leave it out for the top folder) |
 | `Delete Request` | `file_path` |
-| `Subfolder Request` | `action` (`create` or `delete`), `dir_path` |
+| `Subfolder Create Request` | `file_path` (the new folder, its parent has to exist) |
+| `Subfolder Delete Request` | `file_path` (the folder has to be empty) |
 | `Download Request` | `file_path` |
 | `Upload Request` | `file_path`, `file_size` |
 | `Overwrite Reply` | `confirm` (true or false), only after an `Overwrite Prompt` |
@@ -43,9 +44,9 @@ Everything except `Auth Request` and `Goodbye Request` needs a login first.
 | type | fields | notes |
 |---|---|---|
 | `Auth Response` | `username` | |
-| `Dir Response` | `dir_path`, `entries`, `truncated` | entries look like `{name, type, size}`, type is `file` or `dir`. Max 500, then `truncated` is true |
+| `Directory Response` | `file_path`, `entries`, `truncated` | entries look like `{name, type, size}`, type is `file` or `dir`. Max 500, then `truncated` is true |
 | `Delete Response` | `file_path` | |
-| `Subfolder Response` | `action`, `dir_path` | |
+| `Subfolder Create Response`, `Subfolder Delete Response` | `file_path` | |
 | `Download Response` | `filename`, `file_path`, `file_size` | `file_size` raw bytes come next |
 | `Upload Ready` | `file_path`, `file_size` | go ahead and send the bytes |
 | `Overwrite Prompt` | `file_path`, `message` | file exists, answer with `Overwrite Reply` |

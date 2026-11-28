@@ -95,8 +95,8 @@ def test_one_client_does_everything(server):
     assert head["type"] == "Download Response" and head["filename"] == "f.bin"
     assert c.reader.read(head["file_size"]) == data
 
-    assert c.ask(type="Subfolder Request", action="create", dir_path="docs")["type"] == "Subfolder Response"
-    names = [e["name"] for e in c.ask(type="Dir Request")["entries"]]
+    assert c.ask(type="Subfolder Create Request", file_path="docs")["type"] == "Subfolder Create Response"
+    names = [e["name"] for e in c.ask(type="Directory Request")["entries"]]
     assert names == ["docs", "f.bin"]
     assert c.ask(type="Delete Request", file_path="f.bin")["type"] == "Delete Response"
     assert c.ask(type="Goodbye Request")["type"] == "Goodbye Response"
@@ -130,7 +130,7 @@ def test_a_client_that_misbehaves_does_not_hurt_the_others(server):
     bad = Client(server.port)
     bad.sock.sendall(b"\xff\xfe garbage with no newline " * 5000)
     good = login(server.port)
-    assert good.ask(type="Dir Request")["type"] == "Dir Response"
+    assert good.ask(type="Directory Request")["type"] == "Directory Response"
     bad.close()
     good.close()
 
@@ -145,5 +145,5 @@ def test_client_that_vanishes_in_the_middle_of_an_upload_leaves_nothing_behind(s
     assert server.storage.open_files == 0
     assert "half.bin" not in server.storage.files
     other = login(server.port)  # the server is still fine
-    assert other.ask(type="Dir Request")["type"] == "Dir Response"
+    assert other.ask(type="Directory Request")["type"] == "Directory Response"
     other.close()

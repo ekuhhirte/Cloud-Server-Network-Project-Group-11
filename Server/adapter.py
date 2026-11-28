@@ -42,11 +42,15 @@ class Storage:
         if os.path.isdir(real):
             raise IsADirectoryError(path)
         lock = self.lm.buildOrAcquireLock(real)
-        if not lock.acquire_write():
-            raise FileNotFoundError(path)
+        # try, don't wait: if anyone is reading or writing the file, say it is busy
+        if not lock.sectionLock.acquire(blocking=False):
+            raise FileBusyError()
+        if not lock.writerLock.acquire(blocking=False):
+            lock.sectionLock.release()
+            raise FileBusyError()
         try:
             os.remove(real)
-            self.lm.deleteLock(real)
+            self.lm.deleteLock(real)  # marks the lock retired, we still hold both locks
         finally:
             lock.release_write()
 

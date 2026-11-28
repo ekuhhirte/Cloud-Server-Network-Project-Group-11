@@ -241,17 +241,17 @@ def test_dir_lists_the_root_and_a_folder():
     s.dirs.add("docs")
     s.files["docs/b.txt"] = b"z"
     c = logged_in(s)
-    reply = c.ask({"type": "Dir Request"})
-    assert reply["type"] == "Dir Response"
+    reply = c.ask({"type": "Directory Request"})
+    assert reply["type"] == "Directory Response"
     assert [e["name"] for e in reply["entries"]] == ["a.txt", "docs"]
-    reply = c.ask({"type": "Dir Request", "dir_path": "docs"})
+    reply = c.ask({"type": "Directory Request", "file_path": "docs"})
     assert reply["entries"] == [{"name": "b.txt", "type": "file", "size": 1}]
     c.finish()
 
 
 def test_dir_of_missing_folder(conn):
     conn.login()
-    assert is_error(conn.ask({"type": "Dir Request", "dir_path": "nope"}), "File Not Found")
+    assert is_error(conn.ask({"type": "Directory Request", "file_path": "nope"}), "File Not Found")
 
 
 def test_huge_listing_is_cut_short(monkeypatch):
@@ -260,7 +260,7 @@ def test_huge_listing_is_cut_short(monkeypatch):
     for i in range(20):
         s.files[f"f{i:02}.txt"] = b""
     c = logged_in(s)
-    reply = c.ask({"type": "Dir Request"})
+    reply = c.ask({"type": "Directory Request"})
     assert len(reply["entries"]) == 5 and reply["truncated"] is True
     c.finish()
 
@@ -275,7 +275,7 @@ def test_delete_a_file_and_the_ways_it_can_fail():
     assert "a.txt" not in s.files
     assert is_error(c.ask({"type": "Delete Request", "file_path": "a.txt"}), "File Not Found")
     assert is_error(c.ask({"type": "Delete Request", "file_path": "busy.txt"}), "File Is Busy")
-    assert c.ask({"type": "Dir Request"})["type"] == "Dir Response"  # still fine
+    assert c.ask({"type": "Directory Request"})["type"] == "Directory Response"  # still fine
     c.finish()
 
 
@@ -284,25 +284,29 @@ def test_subfolders_create_and_delete():
     c = logged_in(s)
 
     def sub(action, path):
-        return c.ask({"type": "Subfolder Request", "action": action, "dir_path": path})
+        return c.ask({"type": f"Subfolder {action.title()} Request", "file_path": path})
 
-    assert sub("create", "d")["type"] == "Subfolder Response"
+    assert sub("create", "d")["type"] == "Subfolder Create Response"
     assert is_error(sub("create", "d"), "Already Exists")
     assert is_error(sub("create", "nope/child"), "File Not Found")
     s.files["d/x"] = b"1"
     assert is_error(sub("delete", "d"), "Folder Not Empty")
     del s.files["d/x"]
-    assert sub("delete", "d")["type"] == "Subfolder Response"
+    assert sub("delete", "d")["type"] == "Subfolder Delete Response"
     assert is_error(sub("delete", "d"), "File Not Found")
     c.finish()
 
 
-def test_subfolder_needs_a_real_action(conn):
+def test_subfolder_needs_a_path(conn):
     conn.login()
-    reply = conn.ask({"type": "Subfolder Request", "action": "rename", "dir_path": "x"})
-    assert is_error(reply, "Malformed Header")
-    reply = conn.ask({"type": "Subfolder Request", "dir_path": "x"})
-    assert is_error(reply, "Malformed Header")
+    for kind in ("Subfolder Create Request", "Subfolder Delete Request"):
+        assert is_error(conn.ask({"type": kind}), "Malformed Header")
+
+
+def test_old_subfolder_request_is_not_a_command(conn):
+    conn.login()
+    reply = conn.ask({"type": "Subfolder Request", "action": "create", "file_path": "x"})
+    assert is_error(reply, "Unknown Command")
 
 
 @pytest.mark.parametrize(
@@ -310,20 +314,20 @@ def test_subfolder_needs_a_real_action(conn):
     [
         {"type": "Delete Request", "file_path": "../x"},
         {"type": "Delete Request", "file_path": "/etc/passwd"},
-        {"type": "Dir Request", "dir_path": "../.."},
-        {"type": "Subfolder Request", "action": "create", "dir_path": "a/../../x"},
+        {"type": "Directory Request", "file_path": "../.."},
+        {"type": "Subfolder Create Request", "file_path": "a/../../x"},
     ],
 )
 def test_bad_paths_are_refused_by_every_command(conn, header):
     conn.login()
     assert is_error(conn.ask(header), "Bad Path")
-    assert conn.ask({"type": "Dir Request"})["type"] == "Dir Response"
+    assert conn.ask({"type": "Directory Request"})["type"] == "Directory Response"
 
 
 def test_missing_fields_are_refused(conn):
     conn.login()
     assert is_error(conn.ask({"type": "Delete Request"}), "Malformed Header")
-    assert is_error(conn.ask({"type": "Dir Request", "dir_path": 5}), "Malformed Header")
+    assert is_error(conn.ask({"type": "Directory Request", "file_path": 5}), "Malformed Header")
 
 
 def test_a_backend_bug_is_an_error_not_a_crash():
@@ -334,7 +338,7 @@ def test_a_backend_bug_is_an_error_not_a_crash():
 
     s.list_dir = boom
     c = logged_in(s)
-    assert is_error(c.ask({"type": "Dir Request"}), "Internal Server Error")
+    assert is_error(c.ask({"type": "Directory Request"}), "Internal Server Error")
     assert is_error(c.ask({"type": "Delete Request", "file_path": "zzz"}), "File Not Found")
     c.finish()
 
@@ -380,7 +384,7 @@ def test_connection_stays_in_sync_after_downloads():
     for name in ("a", "b", "a"):
         reply, got = download(c, name)
         assert got == s.files[name]
-    assert c.ask({"type": "Dir Request"})["type"] == "Dir Response"
+    assert c.ask({"type": "Directory Request"})["type"] == "Directory Response"
     c.finish()
 
 
@@ -391,7 +395,7 @@ def test_download_of_missing_or_busy_file_is_an_error():
     c = logged_in(s)
     assert is_error(download(c, "nope.txt")[0], "File Not Found")
     assert is_error(download(c, "busy.txt")[0], "File Is Busy")
-    assert c.ask({"type": "Dir Request"})["type"] == "Dir Response"
+    assert c.ask({"type": "Directory Request"})["type"] == "Directory Response"
     assert s.open_files == 0
     c.finish()
 
@@ -491,13 +495,13 @@ def test_upload_saves_exactly_the_same_bytes(size):
 
 def test_upload_does_not_read_into_the_next_request():
     # the file bytes and the next request arrive together. If the server read
-    # past the file size, the Dir Request would get eaten as file data.
+    # past the file size, the Directory Request would get eaten as file data.
     s = FakeStorage()
     c = logged_in(s)
     data = os.urandom(2500)
     c.send({"type": "Upload Request", "file_path": "f", "file_size": len(data)})
     assert c.read()["type"] == "Upload Ready"
-    c.sock.sendall(data + b'{"type": "Dir Request"}\n')
+    c.sock.sendall(data + b'{"type": "Directory Request"}\n')
     assert c.read()["type"] == "Upload Complete"
     assert c.read()["entries"][0]["name"] == "f"
     c.finish()
@@ -558,7 +562,7 @@ def test_saying_no_keeps_the_old_file():
     start_upload_of_existing_file(c)
     assert c.ask({"type": "Overwrite Reply", "confirm": False})["type"] == "Upload Cancelled"
     assert s.files["a.txt"] == b"old"
-    assert c.ask({"type": "Dir Request"})["type"] == "Dir Response"  # back to normal
+    assert c.ask({"type": "Directory Request"})["type"] == "Directory Response"  # back to normal
     c.finish()
 
 
@@ -576,7 +580,7 @@ def test_answering_the_prompt_with_something_else_closes_the_connection():
     s = existing_file_storage()
     c = logged_in(s)
     start_upload_of_existing_file(c)
-    c.send({"type": "Dir Request"})
+    c.send({"type": "Directory Request"})
     assert is_error(c.read(), "Expected Overwrite Reply")
     assert c.closed_by_server()
     assert s.files["a.txt"] == b"old"
@@ -588,7 +592,7 @@ def test_file_that_becomes_busy_while_the_prompt_is_open():
     start_upload_of_existing_file(c)
     s.busy.add("a.txt")  # somebody grabbed it while we waited
     assert is_error(c.ask({"type": "Overwrite Reply", "confirm": True}), "File Is Busy")
-    assert c.ask({"type": "Dir Request"})["type"] == "Dir Response"
+    assert c.ask({"type": "Directory Request"})["type"] == "Directory Response"
     c.finish()
 
 
@@ -622,7 +626,7 @@ def test_uploads_that_are_refused_leave_the_connection_open():
     assert is_error(up("x", network_layer.MAX_UPLOAD + 1), "File Too Large")
     assert is_error(c.ask({"type": "Upload Request", "file_size": 1}), "Malformed Header")
     assert is_error(c.ask({"type": "Upload Request", "file_path": "x"}), "Malformed Header")
-    assert c.ask({"type": "Dir Request"})["type"] == "Dir Response"
+    assert c.ask({"type": "Directory Request"})["type"] == "Directory Response"
     assert s.open_files == 0
     c.finish()
 
@@ -711,7 +715,7 @@ def test_failing_to_save_at_the_end_is_an_error_but_the_connection_lives():
     c.ask({"type": "Upload Request", "file_path": "f", "file_size": 3})
     c.sock.sendall(b"abc")
     assert is_error(c.read(), "Disk Full")
-    assert c.ask({"type": "Dir Request"})["type"] == "Dir Response"  # still in sync
+    assert c.ask({"type": "Directory Request"})["type"] == "Directory Response"  # still in sync
     assert s.open_files == 0 and "f" not in s.files
     c.finish()
 
@@ -804,7 +808,7 @@ def test_transfers_that_fail_or_are_refused_are_not_recorded():
     c = logged_in(s, got)
     c.ask({"type": "Download Request", "file_path": "missing"})
     c.ask({"type": "Upload Request", "file_path": "../x", "file_size": 1})
-    c.ask({"type": "Dir Request"})
+    c.ask({"type": "Directory Request"})
     c.ask({"type": "Download Request", "file_path": "big"})
     c.reader.read(100)
     c.disconnect()  # leaves in the middle of the download
@@ -822,7 +826,7 @@ def test_a_crashing_recorder_does_not_break_the_transfer():
     c = logged_in(s, boom)
     reply, data = download(c, "f")
     assert data == b"hello"
-    assert c.ask({"type": "Dir Request"})["type"] == "Dir Response"
+    assert c.ask({"type": "Directory Request"})["type"] == "Directory Response"
     c.finish()
 
 

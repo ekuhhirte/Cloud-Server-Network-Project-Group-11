@@ -126,7 +126,7 @@ transfer is fine. Failed or refused transfers aren't recorded.
 | Upload, prompt if the file exists | `do_upload`, `ask_overwrite` |
 | Download, error if missing | `do_download`, `error_text` |
 | Delete, error if busy or missing | `do_delete`, `FileBusyError` |
-| Dir and Subfolder create/delete | `do_dir`, `do_subfolder` |
+| Directory and Subfolder create/delete | `do_dir`, `do_subfolder` |
 | Clear error messages | `error_text`, table in `PROTOCOL.md` |
 | Rate, transfer time, third metric | `report_transfer` |
 | Many clients at once | one `serve_client` per thread, nothing shared between clients |

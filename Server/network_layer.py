@@ -170,13 +170,13 @@ def do_auth(c, header):
 
 
 def do_dir(c, header):
-    path = check_path(header.get("dir_path", ""), allow_empty=True)
+    path = check_path(header.get("file_path", ""), allow_empty=True)
     entries = c.backend.list_dir(path)
     send_header(
         c.sock,
         {
-            "type": "Dir Response",
-            "dir_path": path,
+            "type": "Directory Response",
+            "file_path": path,
             "entries": entries[:MAX_DIR_ENTRIES],
             "truncated": len(entries) > MAX_DIR_ENTRIES,
         },
@@ -189,16 +189,13 @@ def do_delete(c, header):
     send_header(c.sock, {"type": "Delete Response", "file_path": path})
 
 
-def do_subfolder(c, header):
-    action = get(header, "action", str)
-    path = check_path(header.get("dir_path"))
+def do_subfolder(c, header, action):
+    path = check_path(header.get("file_path"))
     if action == "create":
         c.backend.create_dir(path)
-    elif action == "delete":
-        c.backend.delete_dir(path)
     else:
-        raise BadRequest("Malformed Header")
-    send_header(c.sock, {"type": "Subfolder Response", "action": action, "dir_path": path})
+        c.backend.delete_dir(path)
+    send_header(c.sock, {"type": f"Subfolder {action.title()} Response", "file_path": path})
 
 
 def do_download(c, header):
@@ -349,14 +346,17 @@ def handle_request(c, header):
         return do_auth(c, header)
     if c.username is None:
         raise BadRequest("Not Authenticated")
-    if kind == "Dir Request":
+    if kind == "Directory Request":
         do_dir(c, header)
         return True
     if kind == "Delete Request":
         do_delete(c, header)
         return True
-    if kind == "Subfolder Request":
-        do_subfolder(c, header)
+    if kind == "Subfolder Create Request":
+        do_subfolder(c, header, "create")
+        return True
+    if kind == "Subfolder Delete Request":
+        do_subfolder(c, header, "delete")
         return True
     if kind == "Download Request":
         do_download(c, header)
