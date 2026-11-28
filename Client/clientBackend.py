@@ -187,4 +187,23 @@ def subfolderDelete(server_socket, server_socket_makefile, file_path):
                 print(f"Failure Reason: {response.get('error')}")
             return False
 
-
+def deletef(server_socket, server_socket_makefile, file_path):
+    sendingHeader = json.dumps({"type": "Delete Request", "file_path": file_path}) + "\n"
+    server_socket.sendall(sendingHeader.encode("utf-8"))
+    
+    response = await_response_from_server(server_socket_makefile)
+    print(f"Response Packet from Server: {response}")
+    
+    if response is None:
+        print("Error Occured with server response")
+        return False
+    else:
+        if (response.get("type") == "Delete Response"):
+            print("File succesfully sent to server")
+            return True
+        elif (response.get("type") == "error"):
+            print("File failed to be sent to server")
+            if (response.get("error") is not None):
+                # If response reason is here, print it, otherwise don't print anything
+                print(f"Failure Reason: {response.get('error')}")
+            return False
